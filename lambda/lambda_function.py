@@ -4,39 +4,41 @@ from ask_sdk_core.skill_builder import SkillBuilder
 from ask_sdk_core.handler_input import HandlerInput
 from ask_sdk_model import Response
 import ask_sdk_core.utils as ask_utils
-import requests
 import logging
-import json
+import boto3
 
-# Set your OpenAI API key
-api_key = "YOUR_API_KEY"
+# Initialize the Amazon Bedrock client
+bedrock_runtime = boto3.client('bedrock-runtime')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class LaunchRequestHandler(AbstractRequestHandler):
     """Handler for Skill Launch."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-
         return ask_utils.is_request_type("LaunchRequest")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
-        speak_output = "Chat G.P.T. mode activated"
+        speak_output = "Claude 3.5 mode activated"
 
         session_attr = handler_input.attributes_manager.session_attributes
         session_attr["chat_history"] = []
 
         return (
             handler_input.response_builder
-                .speak(speak_output)
-                .ask(speak_output)
-                .response
+            .speak(speak_output)
+            .ask(speak_output)
+            .response
         )
 
-class GptQueryIntentHandler(AbstractRequestHandler):
-    """Handler for Gpt Query Intent."""
+
+class ClaudeQueryIntentHandler(AbstractRequestHandler):
+    """Handler for Claude Query Intent."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return ask_utils.is_intent_name("GptQueryIntent")(handler_input)
@@ -48,18 +50,22 @@ class GptQueryIntentHandler(AbstractRequestHandler):
         session_attr = handler_input.attributes_manager.session_attributes
         if "chat_history" not in session_attr:
             session_attr["chat_history"] = []
-        response = generate_gpt_response(session_attr["chat_history"], query)
+
+        response = generate_claude_response(
+            session_attr["chat_history"], query)
         session_attr["chat_history"].append((query, response))
 
         return (
-                handler_input.response_builder
-                    .speak(response)
-                    .ask("Any other questions?")
-                    .response
-            )
+            handler_input.response_builder
+            .speak(response)
+            .ask("Any other questions?")
+            .response
+        )
+
 
 class CatchAllExceptionHandler(AbstractExceptionHandler):
     """Generic error handling to capture any syntax or routing errors."""
+
     def can_handle(self, handler_input, exception):
         # type: (HandlerInput, Exception) -> bool
         return True
@@ -72,13 +78,15 @@ class CatchAllExceptionHandler(AbstractExceptionHandler):
 
         return (
             handler_input.response_builder
-                .speak(speak_output)
-                .ask(speak_output)
-                .response
+            .speak(speak_output)
+            .ask(speak_output)
+            .response
         )
+
 
 class CancelOrStopIntentHandler(AbstractRequestHandler):
     """Single handler for Cancel and Stop Intent."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return (ask_utils.is_intent_name("AMAZON.CancelIntent")(handler_input) or
@@ -86,47 +94,51 @@ class CancelOrStopIntentHandler(AbstractRequestHandler):
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
-        speak_output = "Leaving Chat G.P.T. mode"
+        speak_output = "Leaving Claude 3.5 mode"
 
         return (
             handler_input.response_builder
-                .speak(speak_output)
-                .response
+            .speak(speak_output)
+            .response
         )
 
-def generate_gpt_response(chat_history, new_question):
-    """Generates a GPT response to a new question"""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    url = "https://api.openai.com/v1/chat/completions"
-    messages = [{"role": "system", "content": "You are a helpful assistant. Answer in 50 words or less."}]
+
+def generate_claude_response(chat_history, new_question):
+    """Generates a Claude 3.5 response to a new question using Amazon Bedrock"""
+    messages = [{"role": "user", "content": [{"text": new_question}]}]
+
+    # Add recent chat history (last 10 exchanges)
     for question, answer in chat_history[-10:]:
-        messages.append({"role": "user", "content": question})
-        messages.append({"role": "assistant", "content": answer})
-    messages.append({"role": "user", "content": new_question})
-    
-    data = {
-        "model": "gpt-4o-mini",
-        "messages": messages,
-        "max_tokens": 300,
-        "temperature": 0.5
-    }
+        # Insert earlier in the list so the new question remains at the end
+        messages.insert(
+            0, {"role": "assistant", "content": [{"text": answer}]})
+        messages.insert(0, {"role": "user", "content": [{"text": question}]})
+
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        response_data = response.json()
-        if response.ok:
-            return response_data['choices'][0]['message']['content']
-        else:
-            return f"Error {response.status_code}: {response_data['error']['message']}"
+        # Using the converse API to communicate with Claude 3.5
+        response = bedrock_runtime.converse(
+            modelId='anthropic.claude-3-5-sonnet-20240620-v1:0',  # Claude 3.5 Sonnet model ID
+            messages=messages,
+            system=[
+                {"text": "You are a helpful assistant. Answer in 50 words or less."}],
+            inferenceConfig={
+                'maxTokens': 300,
+                'temperature': 0.5,
+            }
+        )
+
+        # Extract the response text from the Claude model
+        return response['output']['message']['content'][0]['text']
+
     except Exception as e:
-        return f"Error generating response: {str(e)}"
+        logger.error(f"Error generating response: {str(e)}")
+        return f"I encountered an error while processing your request. Please try again."
+
 
 sb = SkillBuilder()
 
 sb.add_request_handler(LaunchRequestHandler())
-sb.add_request_handler(GptQueryIntentHandler())
+sb.add_request_handler(ClaudeQueryIntentHandler())
 sb.add_request_handler(CancelOrStopIntentHandler())
 sb.add_exception_handler(CatchAllExceptionHandler())
 
